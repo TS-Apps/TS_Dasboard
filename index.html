@@ -82,7 +82,7 @@
 
     <script type="text/babel">
         // Ensure React is available globally
-        const { useState, useEffect, useMemo, Component } = React;
+        const { useState, useEffect, useMemo, useCallback, Component } = React;
         
         // --- 1. GLOBAL CONSTANTS ---
         const DATA_VERSION = "1.0.3"; 
@@ -977,6 +977,15 @@
             return arr;
         };
 
+        const sanitizeText = (text) => {
+            if (!text || typeof text !== 'string') return text;
+            // Strip HTML tags and script content
+            return text
+                .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+                .replace(/<[^>]+>/g, '')
+                .trim();
+        };
+
         const parseDate = (dateStr) => {
             if (!dateStr) return null;
             let d = new Date(dateStr);
@@ -1144,7 +1153,24 @@
             const [error, setError] = useState(null);
             const [showVideoModal, setShowVideoModal] = useState(false);
 
+            const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB limit
+            const VALID_MIME_TYPES = ['text/csv', 'application/vnd.ms-excel', 'text/plain'];
+
             const handleFile = (file, type) => {
+                if (!file) return;
+                
+                // Validate file size
+                if (file.size > MAX_FILE_SIZE) {
+                    setError(`File "${file.name}" exceeds 10MB limit. Current size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+                    return;
+                }
+                
+                // Validate MIME type
+                if (!VALID_MIME_TYPES.includes(file.type) && !file.name.endsWith('.csv')) {
+                    setError(`Invalid file type. Please upload CSV files only. File type: ${file.type || 'unknown'}`);
+                    return;
+                }
+                
                 if(type === 'personnel') setPersonnelFile(file);
                 if(type === 'quals') setQualsFile(file);
                 if (error) setError(null); // Clear error on new file selection
@@ -1166,6 +1192,13 @@
                     if (personnelFile) {
                         const text = await readFile(personnelFile);
                         const lines = text.split('\n');
+                        
+                        // Validate row count (excluding header)
+                        const dataRowCount = lines.length - 1;
+                        if (dataRowCount > 1000) {
+                            throw new Error(`Personnel file has too many rows (${dataRowCount}). Maximum allowed is 1,000 cadets.`);
+                        }
+                        
                         const headers = splitCSVLine(lines[0].trim());
                         
                         const findCol = (name) => headers.findIndex(h => h.toLowerCase().includes(name.toLowerCase()));
@@ -1191,13 +1224,13 @@
                             const row = splitCSVLine(lines[i].trim());
                             if (row.length < 3) continue;
                             personnelData.push({
-                                pNumber: (row[idx.pnum] || "").trim(),
-                                rank: normalizeRank(row[idx.rank]), 
-                                name: `${row[idx.surname]}, ${row[idx.first]}`,
+                                pNumber: sanitizeText(row[idx.pnum] || "").trim(),
+                                rank: normalizeRank(sanitizeText(row[idx.rank])), 
+                                name: `${sanitizeText(row[idx.surname])}, ${sanitizeText(row[idx.first])}`,
                                 tos: row[idx.tos],
                                 dob: row[idx.dob],
                                 rankDate: row[idx.rankDate],
-                                unit: row[idx.unit]
+                                unit: sanitizeText(row[idx.unit])
                             });
                         }
                     }
@@ -1205,6 +1238,13 @@
                     if (qualsFile) {
                         const text = await readFile(qualsFile);
                         const lines = text.split('\n');
+                        
+                        // Validate row count (excluding header)
+                        const dataRowCount = lines.length - 1;
+                        if (dataRowCount > 200000) {
+                            throw new Error(`Qualifications file has too many rows (${dataRowCount.toLocaleString()}). Maximum allowed is 200,000 records.`);
+                        }
+                        
                         const headers = splitCSVLine(lines[0].trim());
                         
                         const findCol = (name) => headers.findIndex(h => h.toLowerCase().includes(name.toLowerCase()));
@@ -1227,11 +1267,11 @@
                             const row = splitCSVLine(lines[i].trim());
                             if (row.length < 3) continue;
                             qualsData.push({
-                                pNumber: (row[idx.pnum] || "").trim(),
-                                module: (row[idx.module] || "").trim(),
+                                pNumber: sanitizeText(row[idx.pnum] || "").trim(),
+                                module: sanitizeText(row[idx.module] || "").trim(),
                                 date: parseDate(row[idx.date]),
-                                result: row[idx.result],
-                                syllabus: row[idx.syllabus]
+                                result: sanitizeText(row[idx.result]),
+                                syllabus: sanitizeText(row[idx.syllabus])
                             });
                         }
                     }
@@ -1259,6 +1299,25 @@
                         <button onClick={() => setShowVideoModal(true)} className="inline-flex items-center gap-2 font-bold text-blue-700 hover:text-blue-900 hover:underline cursor-pointer">
                             <Icon name="FileText" className="w-4 h-4" /> Watch Instructions Video
                         </button>
+                    </div>
+
+                    {/* Security Warning */}
+                    <div className="mb-6 p-4 bg-amber-50 border-l-4 border-amber-500 rounded">
+                        <div className="flex items-start gap-2">
+                            <Icon name="ShieldAlert" className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                            <div className="text-sm">
+                                <p className="font-bold text-amber-900 mb-2">Data Security Notice</p>
+                                <p className="text-amber-800 mb-2">
+                                    Your cadet data is stored in your browser only. It never leaves your device.
+                                </p>
+                                <p className="text-amber-800 mb-2">
+                                    <strong>On shared computers:</strong> Always click "Reset Data" when finished to clear all cadet information.
+                                </p>
+                                <p className="text-amber-700 text-xs">
+                                    For best security, use this dashboard on your personal device.
+                                </p>
+                            </div>
+                        </div>
                     </div>
 
                     {error && (
@@ -1413,9 +1472,6 @@
             const [monthOffset, setMonthOffset] = useState(0); 
             // New State for PDF Selection
             const [selectedAwardKeys, setSelectedAwardKeys] = useState(new Set());
-
-            // Icon Render Fix
-            useEffect(() => { lucide.createIcons(); }, [monthOffset]);
 
             const getTargetDate = () => {
                 const d = new Date();
@@ -2029,9 +2085,6 @@
                 }
             }, [personnel, selectedCadetPNum]);
             
-            // Icon Render Fix
-            useEffect(() => { lucide.createIcons(); }, [selectedCadetPNum]);
-
             const sortedPersonnel = useMemo(() => [...personnel].sort((a, b) => a.name.localeCompare(b.name)), [personnel]);
             const selectedCadet = useMemo(() => personnel.find(p => p.pNumber === selectedCadetPNum), [personnel, selectedCadetPNum]);
             
@@ -2819,11 +2872,6 @@
             // Define the list for table columns (either real cadets or a single placeholder)
             const cadetsForColumns = hasCadets ? cadetsAtRank : [{ pNumber: 'PLACEHOLDER', name: 'No Cadets at Rank', rank: selectedRank }];
 
-            // Force icons update when rank changes to ensure new content has icons
-            useEffect(() => {
-                if (window.lucide) window.lucide.createIcons();
-            }, [selectedRank]);
-
             const getModuleRecord = (cadet, mod) => {
                 if (!cadet || !mod) return null;
                 const cleanModCode = mod.code.toLowerCase();
@@ -2995,7 +3043,8 @@
             // NEW STATE for Drill Down Feature
             const [drillDownInfo, setDrillDownInfo] = useState(null); 
 
-            useEffect(() => { lucide.createIcons(); }, [view, sidebarCollapsed, drillDownInfo]);
+            // Icon Render - run when view changes or sidebar collapses/expands
+            useEffect(() => { lucide.createIcons(); }, [view, sidebarCollapsed]);
 
             useEffect(() => {
                 const savedVersion = localStorage.getItem('scc_version');
@@ -3047,8 +3096,8 @@
                 setDrillDownInfo({ module, targetRank, cadetsNeeding });
             };
 
-            // This func ensures planner works
-            const getCadetProgress = (cadet) => {
+            // Memoized progress calculation to prevent unnecessary recalculations
+            const getCadetProgress = useCallback((cadet) => {
                  const isRMC = RMC_RANK_ORDER.includes(cadet.rank);
                  const syllabus = isRMC ? RMC_SYLLABUS : SCC_SYLLABUS;
                  const currentRankSyllabus = syllabus[cadet.rank];
@@ -3059,7 +3108,7 @@
                      if(qualsData.some(q => q.pNumber === cadet.pNumber && q.module.includes(m.code))) passed++;
                  }));
                  return { percentage: total === 0 ? 100 : Math.round((passed/total)*100) };
-            };
+            }, [qualsData]);
 
             const NavItem = ({ id, icon, label }) => (
                 <button onClick={() => setView(id)} className={`flex items-center gap-3 w-full p-3 rounded-lg transition-all ${view === id ? 'bg-blue-800 text-white' : 'text-blue-100 hover:bg-blue-800/50'}`}>
@@ -3113,6 +3162,11 @@
                                     <Icon name="Trash2" className="w-4 h-4 flex-shrink-0"/> 
                                     {!sidebarCollapsed && <span>Reset Data</span>}
                                 </button>
+                                {!sidebarCollapsed && (
+                                    <p className="text-[10px] text-blue-400 mt-2 leading-tight">
+                                        Clear data on shared computers
+                                    </p>
+                                )}
                             </div>
                         </aside>
                         <main className={`flex-1 ${sidebarCollapsed ? 'ml-20' : 'ml-80'} p-8 overflow-y-auto transition-all duration-300`}>
